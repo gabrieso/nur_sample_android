@@ -12,8 +12,14 @@ import android.widget.ToggleButton;
 
 import com.nordicid.nurapi.*;
 import com.nordicid.tdt.*;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.util.Arrays;
+import java.util.Map;
+import java.util.HashMap;
 
 import static com.nordicid.nurapi.NurApi.BANK_EPC;
 import static com.nordicid.nurapi.NurApi.BANK_TID;
@@ -21,6 +27,29 @@ import static com.nordicid.nurapi.NurApi.BANK_USER;
 import static com.nordicid.nurapi.NurApi.MAX_EPC_LENGTH;
 
 public class Inventory extends Activity {
+
+
+    private Map<String, Boolean> expectedTagsMap = new HashMap<>();
+
+    private void loadExpectedTagsFromJson() {
+        try {
+            InputStream is = getAssets().open("installation_plan.json");
+            int size = is.available();
+            byte[] buffer = new byte[size];
+            is.read(buffer);
+            is.close();
+            String json = new String(buffer, StandardCharsets.UTF_8);
+
+            JSONObject obj = new JSONObject(json);
+            JSONObject wagon = obj.getJSONObject("wagon1").getJSONObject("sections"); // Hardcoded for now
+            JSONArray tagsArray = wagon.getJSONArray("A"); // Hardcoded section for now
+            for (int i = 0; i < tagsArray.length(); i++) {
+                expectedTagsMap.put(tagsArray.getString(i), false);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading expected tags: " + e.getMessage());
+        }
+    }
 
     public static final String TAG = "NUR_SAMPLE";
 
@@ -64,13 +93,27 @@ public class Inventory extends Activity {
     //This variable hold last tag epc for making sure same tag found 3 times in row.
     static String mTagUnderReview;
 
+    private TextView progressTextView;
+    private TextView expectedTagsTextView;
+
+
     //===================================================================
+    private void updateExpectedTagsUI() {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Boolean> entry : expectedTagsMap.entrySet()) {
+            sb.append(entry.getKey())
+                    .append(" : ")
+                    .append(entry.getValue() ? "FOUND" : "NOT FOUND")
+                    .append("\n");
+        }
+        expectedTagsTextView.setText(sb.toString());
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_inventory);
-
+        loadExpectedTagsFromJson();
         //Get NurApi and Accessory handles from MainActivity
         mNurApi = MainActivity.GetNurApi();
         mAccExt = MainActivity.GetAccessoryExtensionApi();
@@ -95,6 +138,11 @@ public class Inventory extends Activity {
         TextView mSingleTagTxt2 = (TextView)findViewById(R.id.textViewSingle2);
         TextView mSingleTagTxt3 = (TextView)findViewById(R.id.textViewSingle3);
         TextView mSingleTagTxt4 = (TextView)findViewById(R.id.textViewSingle4);
+        progressTextView = findViewById(R.id.text_progress);
+        expectedTagsTextView = findViewById(R.id.text_expected_tags);
+
+// After loading JSON
+        updateExpectedTagsUI();
 
         mTriggerDown = false;
         mSingleTagDoTask = false;
@@ -535,32 +583,49 @@ public class Inventory extends Activity {
 
                 } else {
 
-                    if(event.tagsAdded>0) {
-                        //At least one new tag found
-                        if(MainActivity.IsAccessorySupported())
-                            mAccExt.beepAsync(20); //Beep on device
+                    if (event.tagsAdded > 0) {
+                        if (MainActivity.IsAccessorySupported())
+                            mAccExt.beepAsync(20);
                         else
-                            Beeper.beep(Beeper.BEEP_40MS); //Cannot beep on device so we beep on phone
+                            Beeper.beep(Beeper.BEEP_40MS);
 
-                        NurTagStorage tagStorage = mNurApi.getStorage(); //Storage contains all tags found
-
-                        //Iterate just received tags based on event.tagsAdded
-                        for(int x=mTagsAddedCounter;x<mTagsAddedCounter+event.tagsAdded;x++) {
-                            //Real application should handle all tags iterated here.
-                            //But this just show how to get tag from storage.
-                            String epcString;
+                        NurTagStorage tagStorage = mNurApi.getStorage();
+                        for (int x = mTagsAddedCounter; x < mTagsAddedCounter + event.tagsAdded; x++) {
                             NurTag tag = tagStorage.get(x);
-                            epcString = NurApi.byteArrayToHexString(tag.getEpc());
-                            //showing just EPC of last tag
+                            String epcString = NurApi.byteArrayToHexString(tag.getEpc());
+
+                            if (expectedTagsMap.containsKey(epcString) && !expectedTagsMap.get(epcString)) {
+                                expectedTagsMap.put(epcString, true);
+                            }
+
                             mUiEpcMsg = epcString;
                         }
 
-                        //Finally show count of tags found
                         mTagsAddedCounter += event.tagsAdded;
-                        mUiResultMsg = "Tags:" + String.valueOf(mTagsAddedCounter);
+
+                        // Calculate progress without streams
+                        long foundCount = 0;
+                        for (Boolean val : expectedTagsMap.values()) {
+                            if (val) foundCount++;
+                        }
+                        progressTextView.setText("Progress: " + foundCount + " / " + expectedTagsMap.size());
+                        updateExpectedTagsUI();
+
+                        mUiResultMsg = "Found " + foundCount + " / " + expectedTagsMap.size();
                         mUiResultColor = Color.rgb(0, 128, 0);
-                        showOnUI(); //Show results on UI
+
+                        if (foundCount == expectedTagsMap.size()) {
+                            mUiStatusMsg = "✅ All expected tags found!";
+                            if (MainActivity.IsAccessorySupported())
+                                mAccExt.beepAsync(500);
+                            Beeper.beep(Beeper.BEEP_300MS);
+                            StopInventoryStream();
+                        }
+
+                        showOnUI();
                     }
+
+
                 }
             }
             catch (Exception ex)
