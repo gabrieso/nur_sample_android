@@ -1,5 +1,9 @@
 package example.nordicid.com.nursampleandroid;
 
+import example.nordicid.com.nursampleandroid.data.AppDatabase;
+import example.nordicid.com.nursampleandroid.data.ScanDao;
+import example.nordicid.com.nursampleandroid.data.ScanEntity;
+
 import android.app.Activity;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -19,6 +23,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 
@@ -38,6 +43,8 @@ public class Inventory extends Activity {
     private TextView progressTextView, expectedTagsTextView;
     private ToggleButton mInvStreamButton;
 
+    private AppDatabase db;
+    private ScanDao scanDao;
     private String mUiStatusMsg = "Waiting for start...";
     private String mUiResultMsg = "";
     private String mUiEpcMsg = "";
@@ -47,6 +54,8 @@ public class Inventory extends Activity {
 
     private boolean mTriggerDown;
     private int mTagsAddedCounter;
+    private TextView allScannedTextView;
+    private final ArrayList<String> scannedTagsList = new ArrayList<>();
 
     private Map<String, Boolean> expectedTagsMap = new HashMap<>();
 
@@ -62,8 +71,15 @@ public class Inventory extends Activity {
         mInvStreamButton = findViewById(R.id.toggleButtonInvStream);
         progressTextView = findViewById(R.id.text_progress);
         expectedTagsTextView = findViewById(R.id.text_expected_tags);
+        allScannedTextView = findViewById(R.id.text_all_scanned);
 
-        // Load tags from intent
+        // Initialize DB
+        db = AppDatabase.getInstance(this);
+        scanDao = db.scanDao();
+        // Load wagon and section
+        String wagon = getIntent().getStringExtra("wagon");
+        String section = getIntent().getStringExtra("section");
+        // Load tags from intent into expectedTagsMap
         expectedTagsMap.clear();
         ArrayList<String> expectedTags = getIntent().getStringArrayListExtra("expectedTags");
         if (expectedTags != null) {
@@ -71,8 +87,16 @@ public class Inventory extends Activity {
                 expectedTagsMap.put(tag, false);
             }
         }
-
+        // Load previously scanned tags for this section
+        List<ScanEntity> previousScans = scanDao.getScansForSection(wagon, section);
+        for (ScanEntity scan : previousScans) {
+            scannedTagsList.add(scan.serialAscii);
+            if (expectedTagsMap.containsKey(scan.epc)) {
+                expectedTagsMap.put(scan.epc, true);
+            }
+        }
         updateExpectedTagsUI();
+        updateScannedListUI();
 
         // Get NurApi
         mNurApi = MainActivity.GetNurApi();
@@ -88,15 +112,37 @@ public class Inventory extends Activity {
         mTagsAddedCounter = 0;
         showOnUI();
     }
+    private void updateScannedListUI() {
+        runOnUiThread(() -> {
+            StringBuilder sb = new StringBuilder("All Scanned Tags:\n");
+            for (String s : scannedTagsList) {
+                sb.append(s).append("\n");
+            }
+            allScannedTextView.setText(sb.toString());
+        });
+    }
+
+    private String hexToAscii(String hexStr) {
+        StringBuilder output = new StringBuilder();
+        for (int i = 0; i < hexStr.length(); i += 2) {
+            String str = hexStr.substring(i, i + 2);
+            int charCode = Integer.parseInt(str, 16);
+            if (charCode >= 32 && charCode <= 126) { // printable characters
+                output.append((char) charCode);
+            }
+        }
+        return output.toString().trim();
+    }
 
     private void updateExpectedTagsUI() {
         if (expectedTagsTextView == null) return; // Safe check
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, Boolean> entry : expectedTagsMap.entrySet()) {
-            sb.append(entry.getKey())
+            sb.append(hexToAscii(entry.getKey()))
                     .append(" : ")
                     .append(entry.getValue() ? "FOUND" : "NOT FOUND")
                     .append("\n");
+
         }
         expectedTagsTextView.setText(sb.toString());
     }
@@ -114,6 +160,7 @@ public class Inventory extends Activity {
 
     private void StartInventoryStream() {
         try {
+            mNurApi.setSetupTxLevel(NurApi.TXLEVEL_10); // Adjust as needed
             mNurApi.clearIdBuffer();
             mNurApi.startInventoryStream();
             mTriggerDown = true;
@@ -135,29 +182,69 @@ public class Inventory extends Activity {
     }
 
     private NurApiListener mNurApiEventListener = new NurApiListener() {
-        @Override public void inventoryStreamEvent(NurEventInventory event) {
+        @Override
+        public void inventoryStreamEvent(NurEventInventory event) {
             try {
-                if (event.stopped && mTriggerDown) mNurApi.startInventoryStream();
-                else if (event.tagsAdded > 0) {
+                if (event.stopped && mTriggerDown) {
+                    // If inventory stopped automatically, restart if toggle is still ON
+                    mNurApi.startInventoryStream();
+                } else if (event.tagsAdded > 0) {
                     NurTagStorage tagStorage = mNurApi.getStorage();
+
                     for (int x = mTagsAddedCounter; x < mTagsAddedCounter + event.tagsAdded; x++) {
                         NurTag tag = tagStorage.get(x);
                         String epc = NurApi.byteArrayToHexString(tag.getEpc());
+
+                        // Convert EPC to ASCII for UI display
+                        String serialNumber = hexToAscii(epc);
+
+                        // Update last scanned tag
+                        mUiEpcMsg = "Last Scanned: " + serialNumber;
+
+                        // Add to scanned list if not already present
+                        if (!scannedTagsList.contains(serialNumber)) {
+                            scannedTagsList.add(serialNumber);
+                        }
+
+                        // Validate against expected tags
                         if (expectedTagsMap.containsKey(epc) && !expectedTagsMap.get(epc)) {
                             expectedTagsMap.put(epc, true);
                         }
-                        mUiEpcMsg = epc;
+
+                        // Save to DB
+                        String wagon = getIntent().getStringExtra("wagon");
+                        String section = getIntent().getStringExtra("section");
+
+                        ScanEntity entity = new ScanEntity();
+                        entity.wagon = wagon;
+                        entity.section = section;
+                        entity.epc = epc;
+                        entity.serialAscii = serialNumber;
+                        entity.timestamp = System.currentTimeMillis();
+                        entity.isExpected = expectedTagsMap.containsKey(epc);
+
+                        scanDao.insert(entity);
                     }
+
+                    // Update counter
                     mTagsAddedCounter += event.tagsAdded;
 
+                    // Refresh UI for scanned list
+                    updateScannedListUI();
+
+                    // Update progress (expected tags)
                     long foundCount = 0;
                     for (Boolean val : expectedTagsMap.values()) if (val) foundCount++;
 
                     progressTextView.setText("Progress: " + foundCount + " / " + expectedTagsMap.size());
                     updateExpectedTagsUI();
 
-                    if (foundCount == expectedTagsMap.size()) StopInventoryStream();
+                    // Stop inventory if all expected tags are found
+                    if (foundCount == expectedTagsMap.size()) {
+                        StopInventoryStream();
+                    }
 
+                    // Show updated status
                     showOnUI();
                 }
             } catch (Exception ignored) {}
