@@ -12,6 +12,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.widget.ToggleButton;
 
 import com.nordicid.nurapi.*;
@@ -72,6 +73,30 @@ public class Inventory extends Activity {
         progressTextView = findViewById(R.id.text_progress);
         expectedTagsTextView = findViewById(R.id.text_expected_tags);
         allScannedTextView = findViewById(R.id.text_all_scanned);
+
+
+        Button resetButton = findViewById(R.id.buttonReset);
+
+        resetButton.setOnClickListener(v -> {
+            String wagon = getIntent().getStringExtra("wagon");
+            String section = getIntent().getStringExtra("section");
+
+            scanDao.clearScansForSection(wagon, section);
+
+            // Reset in-memory structures
+            scannedTagsList.clear();
+            for (String epc : expectedTagsMap.keySet()) {
+                expectedTagsMap.put(epc, false);
+            }
+
+            // Update UI
+            updateExpectedTagsUI();
+            updateScannedListUI();
+            progressTextView.setText("Progress: 0 / " + expectedTagsMap.size());
+
+            Toast.makeText(this, "Progress reset for " + section, Toast.LENGTH_SHORT).show();
+        });
+
 
         // Initialize DB
         db = AppDatabase.getInstance(this);

@@ -5,6 +5,7 @@ import android.os.Bundle;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.Spinner;
+import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -19,17 +20,23 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
+import example.nordicid.com.nursampleandroid.data.AppDatabase;
+import example.nordicid.com.nursampleandroid.data.ScanDao;
+
 public class LocationSelectorActivity extends AppCompatActivity {
 
     private Spinner spinnerWagon, spinnerSection;
     private Button buttonStartScan;
 
-    // Data structures
     private Map<String, List<String>> wagonSectionMap = new HashMap<>();
     private Map<String, List<String>> sectionTagsMap = new HashMap<>();
+    private Map<String, Boolean> sectionCompletionMap = new HashMap<>();
 
     private String selectedWagon;
     private String selectedSection;
+
+    private AppDatabase db;
+    private ScanDao scanDao;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -40,10 +47,37 @@ public class LocationSelectorActivity extends AppCompatActivity {
         spinnerSection = findViewById(R.id.spinnerSection);
         buttonStartScan = findViewById(R.id.buttonStartScan);
 
-        // Load the plan
-        loadInstallationPlan();
 
-        // Populate wagon spinner
+        Button buttonClearAll = findViewById(R.id.buttonClearAll);
+        buttonClearAll.setOnClickListener(v -> {
+            scanDao.clearAll(); // Add this query in DAO
+            computeProgress();
+
+            // Reset UI to ❌ for all sections
+            if (selectedWagon != null) {
+                List<String> sections = wagonSectionMap.get(selectedWagon);
+                List<String> displaySections = new ArrayList<>();
+                for (String section : sections) {
+                    displaySections.add(section + " ❌");
+                }
+                ArrayAdapter<String> sectionAdapter = new ArrayAdapter<>(LocationSelectorActivity.this,
+                        android.R.layout.simple_spinner_item, displaySections);
+                sectionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                spinnerSection.setAdapter(sectionAdapter);
+            }
+
+            Toast.makeText(this, "All scan data cleared!", Toast.LENGTH_SHORT).show();
+        });
+
+        // Initialize DB
+        db = AppDatabase.getInstance(this);
+        scanDao = db.scanDao();
+
+        // Load plan from JSON
+        loadInstallationPlan();
+        computeProgress();
+
+        // Populate wagons
         List<String> wagons = new ArrayList<>(wagonSectionMap.keySet());
         ArrayAdapter<String> wagonAdapter = new ArrayAdapter<>(this,
                 android.R.layout.simple_spinner_item, wagons);
@@ -56,8 +90,20 @@ public class LocationSelectorActivity extends AppCompatActivity {
                                        android.view.View view, int position, long l) {
                 selectedWagon = wagons.get(position);
                 List<String> sections = wagonSectionMap.get(selectedWagon);
+                List<String> displaySections = new ArrayList<>();
+
+                for (String section : sections) {
+                    String displayName = section;
+                    if (sectionCompletionMap.get(selectedWagon + "-" + section)) {
+                        displayName += " ✅";
+                    } else {
+                        displayName += " ❌";
+                    }
+                    displaySections.add(displayName);
+                }
+
                 ArrayAdapter<String> sectionAdapter = new ArrayAdapter<>(LocationSelectorActivity.this,
-                        android.R.layout.simple_spinner_item, sections);
+                        android.R.layout.simple_spinner_item, displaySections);
                 sectionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
                 spinnerSection.setAdapter(sectionAdapter);
             }
@@ -70,7 +116,8 @@ public class LocationSelectorActivity extends AppCompatActivity {
             @Override
             public void onItemSelected(android.widget.AdapterView<?> adapterView,
                                        android.view.View view, int position, long l) {
-                selectedSection = (String) spinnerSection.getItemAtPosition(position);
+                String raw = (String) spinnerSection.getItemAtPosition(position);
+                selectedSection = raw.split(" ")[0]; // Extract original section name
             }
 
             @Override
@@ -123,4 +170,43 @@ public class LocationSelectorActivity extends AppCompatActivity {
             e.printStackTrace();
         }
     }
+
+    private void computeProgress() {
+        for (String wagon : wagonSectionMap.keySet()) {
+            List<String> sections = wagonSectionMap.get(wagon);
+            for (String section : sections) {
+                List<String> expectedTags = sectionTagsMap.get(wagon + "-" + section);
+                int foundCount = scanDao.getFoundExpectedCount(wagon, section);
+                boolean completed = (foundCount == expectedTags.size());
+                sectionCompletionMap.put(wagon + "-" + section, completed);
+            }
+        }
+    }
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // Recompute progress and refresh section spinner UI
+        computeProgress();
+
+        if (selectedWagon != null) {
+            List<String> sections = wagonSectionMap.get(selectedWagon);
+            List<String> displaySections = new ArrayList<>();
+
+            for (String section : sections) {
+                String displayName = section;
+                if (sectionCompletionMap.get(selectedWagon + "-" + section)) {
+                    displayName += " ✅";
+                } else {
+                    displayName += " ❌";
+                }
+                displaySections.add(displayName);
+            }
+
+            ArrayAdapter<String> sectionAdapter = new ArrayAdapter<>(LocationSelectorActivity.this,
+                    android.R.layout.simple_spinner_item, displaySections);
+            sectionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            spinnerSection.setAdapter(sectionAdapter);
+        }
+    }
+
 }
