@@ -410,8 +410,8 @@ public class MainActivity extends AppCompatActivity {
     {
         try {
             if (mNurApi.isConnected()) {
-                    Intent inventoryIntent = new Intent(MainActivity.this, Inventory.class);
-                    startActivityForResult(inventoryIntent, 0);
+                Intent locationIntent = new Intent(MainActivity.this, LocationSelectorActivity.class);
+                startActivity(locationIntent);
             }
             else
             {
